@@ -255,6 +255,10 @@ pre {
     font-family: $base-font-family !important;
 }
 
+code {
+    background-color: var(--code-background-color);
+}
+
 .highlight .hll {
     background-color: var(--code-color-2);
 }
