@@ -1,8 +1,4 @@
-+++
-title = 'Cubic Bézier Representations of Elliptic Arcs in PDFs'
-date = 2024-06-13T07:07:07+01:00
-draft = false
-+++
+# Cubic Bézier Representations of Elliptic Arcs in PDFs’
 Portable Document Format (PDF) files are pervasive, and, as I learned while writing a [PDF creation library](https://pkg.go.dev/github.com/cdillond/gdf), so too are PDF creation libraries. Most of these libraries provide facilities for drawing 2D vector graphics to pages within a PDF file. The PDF spec makes this easy for a predefined set of graphics operator primitives that allow users to draw straight lines, rectangles, and cubic Bézier curves. Users wishing to draw more complex figures need to determine on their own how best to combine these operations to achieve their desired outcome. For certain common shapes - such as circles and ellipses - the process can be surprisingly complicated. This article aims to explain, at a high level, how an author of PDF generating software might implement functions that enable users to draw circles, ellipses, and elliptic arcs without resorting to tedious calculations. As we will see, these are variations on a single problem. I use Go to demonstrate the solution, since it is the language that I wrote my own library in, but the basic concepts should apply to most other languages.
 
 ### Bézier Curves at a Glance
