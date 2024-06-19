@@ -1,0 +1,309 @@
++++
+title = 'Cubic Bézier Representations of Elliptic Arcs in PDFs'
+date = 2024-06-13T07:07:07+01:00
+draft = false
++++
+Portable Document Format (PDF) files are pervasive, and, as I learned while writing a [PDF creation library](https://pkg.go.dev/github.com/cdillond/gdf), so too are PDF creation libraries. Most of these libraries provide facilities for drawing 2D vector graphics to pages within a PDF file. The PDF spec makes this easy for a predefined set of graphics operator primitives that allow users to draw straight lines, rectangles, and cubic Bézier curves. Users wishing to draw more complex figures need to determine on their own how best to combine these operations to achieve their desired outcome. For certain common shapes - such as circles and ellipses - the process can be surprisingly complicated. This article aims to explain, at a high level, how an author of PDF generating software might implement functions that enable users to draw circles, ellipses, and elliptic arcs without resorting to tedious calculations. As we will see, these are variations on a single problem. I use Go to demonstrate the solution, since it is the language that I wrote my own library in, but the basic concepts should apply to most other languages.
+
+### Bézier Curves at a Glance
+I want to proceed with an intuitive approach to the problem of elliptic arc representations, so I won't dwell on the mathematics behind Bézier curves, which can involve rather intricate formulas. There's a wonderful introduction to them [here](https://pomax.github.io/bezierinfo), which we will draw on later. A quick and dirty definition, [taken from Mozilla](https://developer.mozilla.org/en-US/docs/Glossary/Bezier_curve), is that a Bézier curve "is a mathematically described curve used in computer graphics ... [that is] defined by a set of control points." It is also important to know that Bézier curves are polynomials. When dealing with PDFs, which only support *cubic* Bézier curves,[^7] any Bézier curve we encounter can be assumed to be a *cubic polynomial*. Furthermore, any curve we encounter in a PDF that is not part of a font or a raster image can be assumed to be composed of segments of Bézier curves.[^8] Cubic Bézier curves necessarily have four control points; by convention, a segment of a curve drawn to a PDF page will always begin at one of the control points and end at another. This article will distinguish between the start and end points of the curve segment, *which are always control points* but will be referred to only as end points, and the control points which are not also end points, which will be referred to only as control points. Doing so simplifies statements about cubic Bézier curves in particular because it is helpful to conceive of the control points (in a broad sense) as grouped into two pairs, each containing one end point and one "pure" control point.
+
+### PDF Cubic Bézier Paths
+In a PDF document, path building commands appear as part of an internal structure known as a *content stream*. Each page of a PDF is associated with at least one content stream, which contains instructions for rendering the page's graphic and textual content. The operators found in content streams are reminiscent of PostScript, but PDFs lack an equivalent to PostScript's `circle` and `arcto` operators. We therefore will have to make do with the `m` (`moveto`) operator, which sets the PDF path's current point,[^2] and the `c` operator, which is one of the three cubic Bézier curve operators defined by the PDF spec.
+
+A simple, unstroked curve in a PDF content stream might look like this:
+```postscript
+10 10 m
+15 15 25 25 20 20 c
+```
+The `c` operator takes 6 arguments: `x1`, `y1`, `x2`, `y2`, `x3`, and `y3`, where `(x1, y1)` and `(x2, y2)` are the curve's control points and `(x3, y3)` is the curve's endpoint. The start point is implicitly defined as the path's current point, which is initialized using the `m` operator. After each `c` operation, `(x3, y3)` becomes the new current point.
+
+The details of how the necessary information is written to a content stream object can be ignored for now. For the purpose of this article, we can mock a content stream in Go using a struct that embeds an `io.Writer`.
+```go
+type stream struct {
+    w io.Writer
+}
+```
+We can also define a `point` type in Go that represents the x and y coordinates of a point in the PDF user space. The `point` type will be used in the methods we define to write `m` and `c` commands to a `stream`.
+```go
+type point struct {
+    x, y float64
+}
+
+func (s stream) moveTo(p point) {
+    fmt.Fprintf(s.w, "%f %f m\n", p.x, p.y)
+}
+
+// Throughout this article, the start and end points of a curve will be named p1 and p2,
+// and the two associated control points will be named q1 and q2.
+func (s stream) curveTo(q1, q2, p2 point) {
+    fmt.Fprintf(s.w, "%f %f %f %f %f %f c\n", q1.x, q1.y, q2.x, q2.y, p2.x, p2.y)
+}
+```
+These two functions will serve as the basic interface for the content stream.
+
+### Defining an Arc
+While the term *arc* usually means a segment of a curve, its meaning here will be more specific. In this article, I will use the term arc *only* when referring to circular arcs or elliptic arcs, which, as their names imply, are segments of circles or ellipses. In the expansive sense of the word, all curves in a PDF document are also arcs, since they have definite start and end points, but in the more specific sense, *no* curves in a PDF are arcs, since a Bézier curve can never be mathematically equivalent to a circular or elliptic arc.
+
+Ask risk of stating the obvious: all circles are ellipses. If we can figure out how to draw any elliptic arc, we will have figured out how to draw any circular arc. Our API will therefore be based on a function for drawing elliptic arcs, which we will name `Arc`. That function will serve as a tool to construct circles and ellipses.
+
+To decide which parameters the `Arc` function should accept, we can look to competing graphic formats for inspiration. The SVG spec supports `circle` and `ellipse` elements, and SVG `path` elements can contain elliptic arc commands.[^4] The actual format of the SVG arc commands is not [immediately useful](https://www.nan.fyi/svg-paths/arcs), but the W3 references a format for describing an arc that it calls the [*center parameterization*](https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes), which serves a good model for an API that implements an elliptic arc function. Per the W3, this form defines an elliptic arc in terms of the following parameters:
+```
+(cx, cy) are the coordinates of the center of the ellipse.
+rx and ry are the radii of the ellipse (also known as its semi-major and semi-minor axes).
+φ is the angle from the x-axis of the current coordinate system to the x-axis of the ellipse.
+...
+θ1 which is the start angle of the elliptical arc ...
+θ2 which is the end angle of the elliptical arc ...
+Δθ which is the difference between these two angles.
+```
+The `Arc` function we implement will take an arc's center parameterization (or something very like it)[^1] as input and writes an approximation of that arc, composed of cubic Bézier curves, to a PDF. 
+
+### From Ellipse to Circle
+For an ellipse with a center point of `center`, an x-axis angle of `phi`, a semi-major axis of `rx`, and a semi-minor axis of `ry`, the coordinates of the point at the angle `theta` from the ellipse's semi-major axis can be found using the following formula:
+```go
+func ellipse(theta float64) point {
+	var p point
+	sinTheta, cosTheta = math.Sincos(theta)
+	sinPhi, cosPhi = math.Sincos(phi)
+	p.x = center.x + rx*cosTheta*cosPhi - ry*sinTheta*sinPhi
+	p.y = center.y + rx*cosTheta*sinPhi + ry*sinTheta*cosPhi
+	return p
+}
+```
+If we assume that the ellipse is centered on the origin and that `phi` is `0`, this can be simplified to:
+```go
+func ellipse(theta float64) point {
+	var p point
+	sin, cos := math.Sincos(theta)
+	p.x = rx*cos
+	p.y = ry*sin
+	return p
+}
+```
+The parametric formula for a circle of radius `r` centered on the origin is not much different.
+```go
+func circle(theta float64) point {
+	var p point
+	sin, cos := math.Sincos(theta)
+	p.x = r*cos
+	p.y = r*sin
+	return p
+}
+```
+From this vantage, is easy to see that a circle is an ellipse where `rx` and `ry` are equal. Less obvious, though more useful, is the observation that an ellipse is merely a circle that may have been stretched, rotated, or shifted. More precisely, an ellipse is a circle that has undergone zero or more [*affine transformations*](https://en.wikipedia.org/wiki/Affine_transformation). In practical terms, this means that we can define an ellipse as a set of transformations applied to the unit circle. If we can find a Bézier curve that approximates a segment of the underlying circle, we can apply the same transformations that define the circle's relation to the ellipse to the control points of the approximated curve. The resulting curve will fit the transformed ellipse just as the untransformed curve fits the circle.
+
+The affine transformations we will define are not unlike the PDF's native transformation matrices,[^6] except they apply directly to the coordinates they operate on rather than the underlying coordinate system. Traditionally, affine transformations are [represented by matrices](https://en.wikipedia.org/wiki/Affine_transformation#Image_transformation) that are multiplied with a point to produce that point's transformed coordinates. In this case, though, it's easier just to write out the steps for calculating each transformation since they are, for the most part, simple and intuitive.
+```go
+// These transformations return a pointer so that method calls can be chained.
+func (p *point) scale(x, y float64) *point {
+	/*
+		[x 0 0]
+		[0 y 0]
+		[0 0 1]
+	*/
+	p.x *= x
+	p.y *= y
+	return p
+}
+
+func (p *point) translate(dx, dy float64) *point {
+	/*
+		[1 0 dx]
+		[0 1 dy]
+		[0 0 1 ]
+	*/
+	p.x += dx
+	p.y += dy
+	return p
+}
+
+func (p *point) rotate(theta float64) *point {
+	/*
+		[cos(θ) -sin(θ) 0]
+		[sin(θ) cos(θ) 	0]
+		[0 		0 		1]
+	*/
+	sin, cos := math.Sincos(theta)
+	x, y := p.x, p.y
+	p.x = x*cos - y*sin
+	p.y = x*sin + y*cos
+	return p
+}
+```
+The `circle` function will be the classic parametric function for the unit circle. It takes an angle, `theta`, in radians, and returns the point on the unit circle corresponding to that angle. 
+```go
+func circle(theta float64) (p point) {
+    p.y, p.x = math.Sincos(theta)
+    return p
+}
+```
+The process of approximating a cubic Bézier curve involves finding the slope of various line segments that are tangent to the circle. The x and y components of the circle function both have [well-known derivatives](https://en.wikipedia.org/wiki/Differentiation_of_trigonometric_functions), so it is trivial to define a `circleDxDy` function.
+```go
+func circleDxDy(theta float64) (dx, dy float64) {
+    dx, dy = math.Sincos(theta)
+    return -dx, dy
+}
+```
+
+### Splitting the Arc
+Before proceeding any further, a wrinkle in the plan needs to be addressed: as a polynomial function, a Bézier curve cannot be expected to fit arcs with central angles greater than `pi` (or less than `-pi`) radians. In fact, even before reaching `pi`, the accuracy of our approximation will begin to break down. In general, the shorter the arc, the better the approximation, although there is a lower bound where the cost of calculating the values for each segment begins to outweigh the diminishing returns of greater accuracy. To counter this issue, we can cut an arc into segments that are no greater than a chosen maximum segment size. For most use cases involving PDFs, an arc segment angle of `pi/2` or `pi/4` strikes a good balance. The Bézier curve approximations of the segments will be written to the PDF content stream separately, but when viewed by a user, they will appear as a single, continuous curve. For the moment, we can bracket the question of how the arcs will be segmented and proceed under the assumption that any arc we encounter will be sufficiently small to yield an accurate approximation.
+
+### Approximating Very Basic Circular Arcs
+Let's start with the most basic arc we can find: a segment of the unit circle that begins at `(1,0)` and ends at some angle, `alpha`, assumed to be less than or equal to `pi/2`. We will take a naïve approach to approximating this arc. Our approximation will be a symmetrical Bézier curve that crosses through the arc's start, mid, and end points. It turns out that such a curve, if constructed correctly, will closely fit the original arc. 
+
+The Pomax [*Primer on Bézier Curves*](https://pomax.github.io/bezierinfo/#circles_cubic) referenced earlier includes a section on circular arcs that goes into greater detail about the fitting process. It contains a formal explanation of the derivation of the control points for the approximated curve. The explanation (and, indeed, the entire article) is well worth reading - but it will not be recapitulated here. In short, we can take for granted that for a symmetrical cubic Bézier curve segment beginning at `(1, 0)`, ending at `circle(alpha)`, and passing through `circle(alpha/2)`, the distance, `kappa`, of each control point from its respective end point can be found using the following function:
+```go
+func kappa(alpha float64) float64 { return 4./3.*math.Tan(alpha/4.) }
+```
+Each end point / control point pair forms a line segment that is tangent to the unit circle. Using the `kappa` function,[^3] we can build a new function to determine the control points for a Bézier curve that approximates our very basic circular arc from `circle(0)` to `circle(alpha)`. The values for the start point and first control point can be determined in advance, but I'm leaving them in for the sake of clarity.
+```go
+func basicArc(alpha float64) (p1, q1, q2, p2 point) {
+    p1 = circle(0) // (1, 0)
+    p2 = circle(alpha)
+
+	// find the distance from p1 to q1 and p2 to q2.
+    k := kappa(alpha)
+	// find the slope of the tangent at (1, 0).
+    dx, dy := circleDxDy(0) // 0, 1
+	// calculate the coordinates of the first control point.
+    q1.x = p1.x - dx*k // 1
+    q1.y = p1.y + dy*k // k
+
+	// find the slope of the tangent at circle(alpha).
+    dx, dy = circleDxDy(alpha)
+	// calculate the coordinates of the second control point.
+    q2.x = p2.x - dx*k
+    q2.y = p2.y - dy*k
+
+    return p1, q1, q2, p2
+}
+```
+### Approximating Marginally Less Basic Circular Arcs
+But what happens if we want to draw circular arcs that don't begin at the point `(1, 0)`? The simple answer is that we can determine the values for the points that define the Bézier approximation of a very basiThe end point / control point pairs will form a line segment that is tangent to thec arc beginning at `(1,0)` with the same central angle as the target arc, and then rotate the curve points, by means of our `rotate` function, to their proper places. 
+
+To do this, we can modify the `basicArc` function to accept a start angle, `tau`, which will be the offset of the arc. The `basicArc` arc function will then rotate the returned points so that the arc begins at the angle `tau` instead of `0` and ends at `alpha + tau` instead of `alpha`. This approach also saves us from having to determine the sign, relative to the start and end points, of the control points, which varies depending on the direction of the arc and the quadrant that it's in.
+```go
+func basicArc(alpha, tau float64) (p1, q1, q2, p2 point) {
+	// The simplifications commented in the previous version of the function have been applied.
+	p1.x = 1
+	p2 = circle(alpha)
+
+	k := kappa(alpha)
+
+	q1.x = 1
+	q1.y = k
+
+	dx, dy := circleDxDy(alpha)
+	q2.x = p2.x - dx*k
+	q2.y = p2.y - dy*k
+
+	p1.rotate(tau)
+	q1.rotate(tau)
+	q2.rotate(tau)
+	p2.rotate(tau)
+	return p1, q1, q2, p2
+}
+```
+This means that we can now define an approximation of any arc on the unit circle in terms of the arc's central angle and angle of offset as long as the arc's central angle is less than `pi` (and, ideally, less than or equal to `pi/2`). To draw an arc with a central angle that exceeds this limit, all we need to do is split the arc into smaller segments and then draw those segments as if they were individual arcs.
+### Approximating Circular Arcs
+We are now ready to add a new method, `Arc`, to the `stream` type. The `Arc` method will be responsible for splitting the arc into segments and writing the Bézier approximations of those segments to the `stream` receiver. In this function, we define a loop variable `beta`, which is initialized to 0, and counts upwards by `step` until it reaches `delta`. The `step` variable is the maximum arc length in radians. Each iteration, the curve drawn to the `stream` will have an offset of `theta` and an angle of `step`, unless `step` is larger than the angle of the portion of the arc yet to be drawn. In that case, the segment will have an angle of `delta - beta`, which is effectively the remainder of `delta`/`step`. At the end of each iteration, the offset, `theta` is incremented by `step`.
+```go
+func (s *stream) Arc(theta, delta, step float64) {
+	if step <= 0 || step > math.Pi {
+		return
+	}
+	for beta := 0.; beta < delta; beta += step {
+		p1, q1, q2, p2 := basicArc(theta, min(step, delta-beta))
+		if beta == 0 {
+			s.moveTo(p1)
+		}
+		s.curveTo(q1, q2, p2)
+		theta += step
+	}
+}
+```
+It is important for the `Arc` function to handle negative values of `delta` correctly. When `delta` is negative, the function should draw the arc in a clockwise direction.[^5] Implementing this involves duplicating some of the logic for positive values of `delta`, but the overall process remains quite simple.
+```go
+func (s *stream) Arc(theta, delta, step float64) {
+	if step <= 0 || step > math.Pi {
+		return
+	}
+	if delta > 0 {
+		for beta := 0.; beta < delta; beta += step {
+			p1, q1, q2, p2 := basicArc(theta, min(step, delta-beta))
+			if beta == 0 {
+				s.moveTo(p1)
+			}
+			s.curveTo(q1, q2, p2)
+			theta += step
+		}
+	} else {
+		for beta := 0.; beta > delta; beta -= step {
+			p1, q1, q2, p2 := basicArc(theta, max(-step, delta-beta))
+			if beta == 0 {
+				s.moveTo(p1)
+			}
+			s.curveTo(q1, q2, p2)
+			theta -= step
+		}
+	}
+}
+```
+### Approximating Elliptic Arcs
+As it stands, `Arc` only draws circular arcs along the unit circle. But we now have all the tools necessary to draw any elliptic arc. The final step is to transform each point so that the arc's center point, x-radius, y-radius, and x angle of rotation match the supplied parameters. We can do this using our affine transformations. The order of these transformations makes a difference. To get the correct results, we need to first scale, then rotate, then translate each point. 
+```go
+func (s *stream) Arc(cx, cy, rx, ry, theta, delta, phi, step float64) {
+	if step <= 0 || step > math.Pi {
+		return
+	}
+	if delta > 0 {
+		for beta := 0.; beta < delta; beta += step {
+			p1, q1, q2, p2 := basicArc(theta, min(step, delta-beta))
+			p1.scale(rx, ry).rotate(phi).translate(cx, cy)
+			q1.scale(rx, ry).rotate(phi).translate(cx, cy)
+			q2.scale(rx, ry).rotate(phi).translate(cx, cy)
+			p2.scale(rx, ry).rotate(phi).translate(cx, cy)
+			if beta == 0 {
+				s.moveTo(p1)
+			}
+			s.curveTo(q1, q2, p2)
+			theta += step
+		}
+	} else {
+		for beta := 0.; beta > delta; beta -= step {
+			p1, q1, q2, p2 := basicArc(theta, max(-step, delta-beta))
+			p1.scale(rx, ry).rotate(phi).translate(cx, cy)
+			q1.scale(rx, ry).rotate(phi).translate(cx, cy)
+			q2.scale(rx, ry).rotate(phi).translate(cx, cy)
+			p2.scale(rx, ry).rotate(phi).translate(cx, cy)
+			if beta == 0 {
+				s.moveTo(p1)
+			}
+			s.curveTo(q1, q2, p2)
+			theta -= step
+		}
+	}
+}
+```
+### From Arc to Ellipse to Circle
+Since an ellipse is just an arc with a `delta` of `2*pi` and a circle is just an ellipse with equal `rx` and `ry` values, the conclusion to this whole saga is anti-climatic. We can choose a `step` value (here, it will be `pi/4`) and write the following wrappers for the `Arc` method.
+```go
+func (s *stream) Ellipse(cx, cy, rx, ry, phi float64) { 
+	s.Arc(cx, cy, rx, ry, 0, 2*math.Pi, phi, math.Pi/4.)
+}
+
+func (s *stream) Circle(cx, cy, r float64) { 
+	s.Arc(cx, cy, r, r, 0, 2*math.Pi, 0, math.Pi/4.)
+}
+```
+To be sure, these methods can be further optimized - but what we have works, and that's what matters most.
+### End Notes
+[^1]:The θ2 parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
+[^2]:The current point is a concept that has no concrete representation as a data structure within a PDF file. Nonetheless, it is helpful to track the current point in order to know precisely where on the page a path operation will take place.
+[^3]:Many programs pre-compute and hard-code values of `kappa` for frequently used angles. The values of `kappa` for `pi/2`, `pi/4`, and `pi/8`, are `0.5522847498307933`, `0.265216489839544` and `0.13132187114288565`. There are other values, derived by other means, that lead to slightly better approximations of the underlying arc, depending on how the error of the fit is calculated, but the method used here is adequate for nearly all cases.
+[^4]:PDF user space graphics have a Cartesian coordinate system. SVGs and many other 2D graphic representations do not. In the SVG coordinate space, y increases downwards. Because of this, certain aspects of the literature on SVG graphics do not directly translate to PDF graphics, and it is important to remain cognizant of this difference.
+[^5]:Path direction matters, even if it seems like it shouldn't. If a path is filled using the [non-zero winding](https://en.wikipedia.org/wiki/Nonzero-rule) rule, a point's fill state can depend on the path's direction.
+[^6]:The PDF spec is available for free, but it's not possible to link to it directly. Discussion of PDF transformation matrices can be found in section 8.3.4 of the spec. For information on transformation matrices in computer graphics generally, see this [lecture powerpoint](https://www3.nd.edu/~pbui/teaching/cse.40166.fa10/slides/Lecture_4_Transformations_and_Matrices.pdf).
+[^7]:PDFs support font formats that describe character outlines in terms of quadratic Bézier curves, but that's a whole other can of worms. Here, we are only concerned with graphics operators defined directly by the PDF specification.
+[^8]:In other words, all curves found in a PDF are [*splines*](https://en.wikipedia.org/wiki/Spline_(mathematics)).
