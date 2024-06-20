@@ -18,6 +18,7 @@ A simple, unstroked curve in a PDF content stream might look like this:
 10 10 m
 15 15 25 25 20 20 c
 ```
+
 The `c` operator takes 6 arguments: `x1`, `y1`, `x2`, `y2`, `x3`, and `y3`, where `(x1, y1)` and `(x2, y2)` are the curve's control points and `(x3, y3)` is the curve's endpoint. The start point is implicitly defined as the path's current point, which is initialized using the `m` operator. After each `c` operation, `(x3, y3)` becomes the new current point.
 
 The details of how the necessary information is written to a content stream object can be ignored for now. For the purpose of this article, we can mock a content stream in Go using a struct that embeds an `io.Writer`.
@@ -26,6 +27,7 @@ type stream struct {
     w io.Writer
 }
 ```
+
 We can also define a `point` type in Go that represents the x and y coordinates of a point in the PDF user space. The `point` type will be used in the methods we define to write `m` and `c` commands to a `stream`.
 ```go
 type point struct {
@@ -42,6 +44,7 @@ func (s stream) curveTo(q1, q2, p2 point) {
     fmt.Fprintf(s.w, "%f %f %f %f %f %f c\n", q1.x, q1.y, q2.x, q2.y, p2.x, p2.y)
 }
 ```
+
 These two functions will serve as the basic interface for the content stream.
 
 ### Defining an Arc
@@ -73,6 +76,7 @@ func ellipse(theta float64) point {
 	return p
 }
 ```
+
 If we assume that the ellipse is centered on the origin and that `phi` is `0`, this can be simplified to:
 ```go
 func ellipse(theta float64) point {
@@ -83,6 +87,7 @@ func ellipse(theta float64) point {
 	return p
 }
 ```
+
 The parametric formula for a circle of radius `r` centered on the origin is not much different.
 ```go
 func circle(theta float64) point {
@@ -93,6 +98,7 @@ func circle(theta float64) point {
 	return p
 }
 ```
+
 From this vantage, is easy to see that a circle is an ellipse where `rx` and `ry` are equal. Less obvious, though more useful, is the observation that an ellipse is merely a circle that may have been stretched, rotated, or shifted. More precisely, an ellipse is a circle that has undergone zero or more [*affine transformations*](https://en.wikipedia.org/wiki/Affine_transformation). In practical terms, this means that we can define an ellipse as a set of transformations applied to the unit circle. If we can find a Bézier curve that approximates a segment of the underlying circle, we can apply the same transformations that define the circle's relation to the ellipse to the control points of the approximated curve. The resulting curve will fit the transformed ellipse just as the untransformed curve fits the circle.
 
 The affine transformations we will define are not unlike the PDF's native transformation matrices,[^6] except they apply directly to the coordinates they operate on rather than the underlying coordinate system. Traditionally, affine transformations are [represented by matrices](https://en.wikipedia.org/wiki/Affine_transformation#Image_transformation) that are multiplied with a point to produce that point's transformed coordinates. In this case, though, it's easier just to write out the steps for calculating each transformation since they are, for the most part, simple and intuitive.
@@ -133,6 +139,7 @@ func (p *point) rotate(theta float64) *point {
 	return p
 }
 ```
+
 The `circle` function will be the classic parametric function for the unit circle. It takes an angle, `theta`, in radians, and returns the point on the unit circle corresponding to that angle. 
 ```go
 func circle(theta float64) (p point) {
@@ -140,6 +147,7 @@ func circle(theta float64) (p point) {
     return p
 }
 ```
+
 The process of approximating a cubic Bézier curve involves finding the slope of various line segments that are tangent to the circle. The x and y components of the circle function both have [well-known derivatives](https://en.wikipedia.org/wiki/Differentiation_of_trigonometric_functions), so it is trivial to define a `circleDxDy` function.
 ```go
 func circleDxDy(theta float64) (dx, dy float64) {
@@ -181,6 +189,7 @@ func basicArc(alpha float64) (p1, q1, q2, p2 point) {
     return p1, q1, q2, p2
 }
 ```
+
 ### Approximating Marginally Less Basic Circular Arcs
 But what happens if we want to draw circular arcs that don't begin at the point `(1, 0)`? The simple answer is that we can determine the values for the points that define the Bézier approximation of a very basiThe end point / control point pairs will form a line segment that is tangent to thec arc beginning at `(1,0)` with the same central angle as the target arc, and then rotate the curve points, by means of our `rotate` function, to their proper places. 
 
@@ -207,6 +216,7 @@ func basicArc(alpha, tau float64) (p1, q1, q2, p2 point) {
 	return p1, q1, q2, p2
 }
 ```
+
 This means that we can now define an approximation of any arc on the unit circle in terms of the arc's central angle and angle of offset as long as the arc's central angle is less than `pi` (and, ideally, less than or equal to `pi/2`). To draw an arc with a central angle that exceeds this limit, all we need to do is split the arc into smaller segments and then draw those segments as if they were individual arcs.
 ### Approximating Circular Arcs
 We are now ready to add a new method, `Arc`, to the `stream` type. The `Arc` method will be responsible for splitting the arc into segments and writing the Bézier approximations of those segments to the `stream` receiver. In this function, we define a loop variable `beta`, which is initialized to 0, and counts upwards by `step` until it reaches `delta`. The `step` variable is the maximum arc length in radians. Each iteration, the curve drawn to the `stream` will have an offset of `theta` and an angle of `step`, unless `step` is larger than the angle of the portion of the arc yet to be drawn. In that case, the segment will have an angle of `delta - beta`, which is effectively the remainder of `delta`/`step`. At the end of each iteration, the offset, `theta` is incremented by `step`.
@@ -225,6 +235,7 @@ func (s *stream) Arc(theta, delta, step float64) {
 	}
 }
 ```
+
 It is important for the `Arc` function to handle negative values of `delta` correctly. When `delta` is negative, the function should draw the arc in a clockwise direction.[^5] Implementing this involves duplicating some of the logic for positive values of `delta`, but the overall process remains quite simple.
 ```go
 func (s *stream) Arc(theta, delta, step float64) {
@@ -252,6 +263,7 @@ func (s *stream) Arc(theta, delta, step float64) {
 	}
 }
 ```
+
 ### Approximating Elliptic Arcs
 As it stands, `Arc` only draws circular arcs along the unit circle. But we now have all the tools necessary to draw any elliptic arc. The final step is to transform each point so that the arc's center point, x-radius, y-radius, and x angle of rotation match the supplied parameters. We can do this using our affine transformations. The order of these transformations makes a difference. To get the correct results, we need to first scale, then rotate, then translate each point. 
 ```go
@@ -288,6 +300,7 @@ func (s *stream) Arc(cx, cy, rx, ry, theta, delta, phi, step float64) {
 	}
 }
 ```
+
 ### From Arc to Ellipse to Circle
 Since an ellipse is just an arc with a `delta` of `2*pi` and a circle is just an ellipse with equal `rx` and `ry` values, the conclusion to this whole saga is anti-climatic. We can choose a `step` value (here, it will be `pi/4`) and write the following wrappers for the `Arc` method.
 ```go
@@ -299,6 +312,7 @@ func (s *stream) Circle(cx, cy, r float64) {
 	s.Arc(cx, cy, r, r, 0, 2*math.Pi, 0, math.Pi/4.)
 }
 ```
+
 To be sure, these methods can be further optimized - but what we have works, and that's what matters most.
 ### End Notes
 [^1]:The θ2 parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
