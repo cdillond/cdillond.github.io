@@ -20,9 +20,7 @@ A simple, unstroked curve in a PDF content stream might look like this:
 10 10 m
 15 15 25 25 20 20 c
 ```
-
-
-The `c` operator takes 6 arguments: `x1`, `y1`, `x2`, `y2`, `x3`, and `y3`, where `(x1, y1)` and `(x2, y2)` are the curve's control points and `(x3, y3)` is the curve's endpoint. The start point is implicitly defined as the path's current point, which is initialized using the `m` operator. After each `c` operation, `(x3, y3)` becomes the new current point.
+The `c` operator takes six arguments: `x1`, `y1`, `x2`, `y2`, `x3`, and `y3`, where `(x1, y1)` and `(x2, y2)` are the curve's control points and `(x3, y3)` is the curve's endpoint. The start point is implicitly defined as the path's current point, which is initialized using the `m` operator. After each `c` operation, `(x3, y3)` becomes the new current point.
 
 The details of how the necessary information is written to a content stream object can be ignored for now. For the purpose of this article, we can mock a content stream in Go using a struct that embeds an `io.Writer`.
 ```go
@@ -48,8 +46,6 @@ func (s stream) curveTo(q1, q2, p2 point) {
     fmt.Fprintf(s.w, "%f %f %f %f %f %f c\n", q1.x, q1.y, q2.x, q2.y, p2.x, p2.y)
 }
 ```
-
-
 These two functions will serve as the basic interface for the content stream.
 
 ### Defining an Arc
@@ -67,8 +63,6 @@ rx and ry are the radii of the ellipse (also known as its semi-major and semi-mi
 θ2 which is the end angle of the elliptical arc ...
 Δθ which is the difference between these two angles.
 ```
-
-
 The `Arc` function we implement will take an arc's center parameterization (or something very like it)[^1] as input and writes an approximation of that arc, composed of cubic Bézier curves, to a PDF. 
 
 ### From Ellipse to Circle
@@ -95,8 +89,6 @@ func ellipse(theta float64) point {
 	return p
 }
 ```
-
-
 The parametric formula for a circle of radius `r` centered on the origin is not much different.
 ```go
 func circle(theta float64) point {
@@ -107,8 +99,6 @@ func circle(theta float64) point {
 	return p
 }
 ```
-
-
 From this vantage, is easy to see that a circle is an ellipse where `rx` and `ry` are equal. Less obvious, though more useful, is the observation that an ellipse is merely a circle that may have been stretched, rotated, or shifted. More precisely, an ellipse is a circle that has undergone zero or more [*affine transformations*](https://en.wikipedia.org/wiki/Affine_transformation). In practical terms, this means that we can define an ellipse as a set of transformations applied to the unit circle. If we can find a Bézier curve that approximates a segment of the underlying circle, we can apply the same transformations that define the circle's relation to the ellipse to the control points of the approximated curve. The resulting curve will fit the transformed ellipse just as the untransformed curve fits the circle.
 
 The affine transformations we will define are not unlike the PDF's native transformation matrices,[^6] except they apply directly to the coordinates they operate on rather than the underlying coordinate system. Traditionally, affine transformations are [represented by matrices](https://en.wikipedia.org/wiki/Affine_transformation#Image_transformation) that are multiplied with a point to produce that point's transformed coordinates. In this case, though, it's easier just to write out the steps for calculating each transformation since they are, for the most part, simple and intuitive.
@@ -149,8 +139,6 @@ func (p *point) rotate(theta float64) *point {
 	return p
 }
 ```
-
-
 The `circle` function will be the classic parametric function for the unit circle. It takes an angle, `theta`, in radians, and returns the point on the unit circle corresponding to that angle. 
 ```go
 func circle(theta float64) (p point) {
@@ -158,8 +146,6 @@ func circle(theta float64) (p point) {
     return p
 }
 ```
-
-
 The process of approximating a cubic Bézier curve involves finding the slope of various line segments that are tangent to the circle. The x and y components of the circle function both have [well-known derivatives](https://en.wikipedia.org/wiki/Differentiation_of_trigonometric_functions), so it is trivial to define a `circleDxDy` function.
 ```go
 func circleDxDy(theta float64) (dx, dy float64) {
@@ -251,7 +237,6 @@ func (s *stream) Arc(theta, delta, step float64) {
 }
 ```
 
-
 It is important for the `Arc` function to handle negative values of `delta` correctly. When `delta` is negative, the function should draw the arc in a clockwise direction.[^5] Implementing this involves duplicating some of the logic for positive values of `delta`, but the overall process remains quite simple.
 ```go
 func (s *stream) Arc(theta, delta, step float64) {
@@ -329,10 +314,9 @@ func (s *stream) Circle(cx, cy, r float64) {
 }
 ```
 
-
 To be sure, these methods can be further optimized - but what we have works, and that's what matters most.
 ### End Notes
-[^1]:The θ2 parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
+[^1]:The `\theta_2` parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
 [^2]:The current point is a concept that has no concrete representation as a data structure within a PDF file. Nonetheless, it is helpful to track the current point in order to know precisely where on the page a path operation will take place.
 [^3]:Many programs pre-compute and hard-code values of `kappa` for frequently used angles. The values of `kappa` for `pi/2`, `pi/4`, and `pi/8`, are `0.5522847498307933`, `0.265216489839544` and `0.13132187114288565`. There are other values, derived by other means, that lead to slightly better approximations of the underlying arc, depending on how the error of the fit is calculated, but the method used here is adequate for nearly all cases.
 [^4]:PDF user space graphics have a Cartesian coordinate system. SVGs and many other 2D graphic representations do not. In the SVG coordinate space, y increases downwards. Because of this, certain aspects of the literature on SVG graphics do not directly translate to PDF graphics, and it is important to remain cognizant of this difference.
