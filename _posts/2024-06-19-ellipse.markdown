@@ -19,6 +19,7 @@ A simple, unstroked curve in a PDF content stream might look like this:
 15 15 25 25 20 20 c
 ```
 
+
 The `c` operator takes 6 arguments: `x1`, `y1`, `x2`, `y2`, `x3`, and `y3`, where `(x1, y1)` and `(x2, y2)` are the curve's control points and `(x3, y3)` is the curve's endpoint. The start point is implicitly defined as the path's current point, which is initialized using the `m` operator. After each `c` operation, `(x3, y3)` becomes the new current point.
 
 The details of how the necessary information is written to a content stream object can be ignored for now. For the purpose of this article, we can mock a content stream in Go using a struct that embeds an `io.Writer`.
@@ -27,6 +28,7 @@ type stream struct {
     w io.Writer
 }
 ```
+
 
 We can also define a `point` type in Go that represents the x and y coordinates of a point in the PDF user space. The `point` type will be used in the methods we define to write `m` and `c` commands to a `stream`.
 ```go
@@ -45,6 +47,7 @@ func (s stream) curveTo(q1, q2, p2 point) {
 }
 ```
 
+
 These two functions will serve as the basic interface for the content stream.
 
 ### Defining an Arc
@@ -62,6 +65,8 @@ rx and ry are the radii of the ellipse (also known as its semi-major and semi-mi
 θ2 which is the end angle of the elliptical arc ...
 Δθ which is the difference between these two angles.
 ```
+
+
 The `Arc` function we implement will take an arc's center parameterization (or something very like it)[^1] as input and writes an approximation of that arc, composed of cubic Bézier curves, to a PDF. 
 
 ### From Ellipse to Circle
@@ -77,6 +82,7 @@ func ellipse(theta float64) point {
 }
 ```
 
+
 If we assume that the ellipse is centered on the origin and that `phi` is `0`, this can be simplified to:
 ```go
 func ellipse(theta float64) point {
@@ -88,6 +94,7 @@ func ellipse(theta float64) point {
 }
 ```
 
+
 The parametric formula for a circle of radius `r` centered on the origin is not much different.
 ```go
 func circle(theta float64) point {
@@ -98,6 +105,7 @@ func circle(theta float64) point {
 	return p
 }
 ```
+
 
 From this vantage, is easy to see that a circle is an ellipse where `rx` and `ry` are equal. Less obvious, though more useful, is the observation that an ellipse is merely a circle that may have been stretched, rotated, or shifted. More precisely, an ellipse is a circle that has undergone zero or more [*affine transformations*](https://en.wikipedia.org/wiki/Affine_transformation). In practical terms, this means that we can define an ellipse as a set of transformations applied to the unit circle. If we can find a Bézier curve that approximates a segment of the underlying circle, we can apply the same transformations that define the circle's relation to the ellipse to the control points of the approximated curve. The resulting curve will fit the transformed ellipse just as the untransformed curve fits the circle.
 
@@ -140,6 +148,7 @@ func (p *point) rotate(theta float64) *point {
 }
 ```
 
+
 The `circle` function will be the classic parametric function for the unit circle. It takes an angle, `theta`, in radians, and returns the point on the unit circle corresponding to that angle. 
 ```go
 func circle(theta float64) (p point) {
@@ -147,6 +156,7 @@ func circle(theta float64) (p point) {
     return p
 }
 ```
+
 
 The process of approximating a cubic Bézier curve involves finding the slope of various line segments that are tangent to the circle. The x and y components of the circle function both have [well-known derivatives](https://en.wikipedia.org/wiki/Differentiation_of_trigonometric_functions), so it is trivial to define a `circleDxDy` function.
 ```go
@@ -166,6 +176,8 @@ The Pomax [*Primer on Bézier Curves*](https://pomax.github.io/bezierinfo/#circl
 ```go
 func kappa(alpha float64) float64 { return 4./3.*math.Tan(alpha/4.) }
 ```
+
+
 Each end point / control point pair forms a line segment that is tangent to the unit circle. Using the `kappa` function,[^3] we can build a new function to determine the control points for a Bézier curve that approximates our very basic circular arc from `circle(0)` to `circle(alpha)`. The values for the start point and first control point can be determined in advance, but I'm leaving them in for the sake of clarity.
 ```go
 func basicArc(alpha float64) (p1, q1, q2, p2 point) {
@@ -217,6 +229,7 @@ func basicArc(alpha, tau float64) (p1, q1, q2, p2 point) {
 }
 ```
 
+
 This means that we can now define an approximation of any arc on the unit circle in terms of the arc's central angle and angle of offset as long as the arc's central angle is less than `pi` (and, ideally, less than or equal to `pi/2`). To draw an arc with a central angle that exceeds this limit, all we need to do is split the arc into smaller segments and then draw those segments as if they were individual arcs.
 ### Approximating Circular Arcs
 We are now ready to add a new method, `Arc`, to the `stream` type. The `Arc` method will be responsible for splitting the arc into segments and writing the Bézier approximations of those segments to the `stream` receiver. In this function, we define a loop variable `beta`, which is initialized to 0, and counts upwards by `step` until it reaches `delta`. The `step` variable is the maximum arc length in radians. Each iteration, the curve drawn to the `stream` will have an offset of `theta` and an angle of `step`, unless `step` is larger than the angle of the portion of the arc yet to be drawn. In that case, the segment will have an angle of `delta - beta`, which is effectively the remainder of `delta`/`step`. At the end of each iteration, the offset, `theta` is incremented by `step`.
@@ -235,6 +248,7 @@ func (s *stream) Arc(theta, delta, step float64) {
 	}
 }
 ```
+
 
 It is important for the `Arc` function to handle negative values of `delta` correctly. When `delta` is negative, the function should draw the arc in a clockwise direction.[^5] Implementing this involves duplicating some of the logic for positive values of `delta`, but the overall process remains quite simple.
 ```go
@@ -312,6 +326,7 @@ func (s *stream) Circle(cx, cy, r float64) {
 	s.Arc(cx, cy, r, r, 0, 2*math.Pi, 0, math.Pi/4.)
 }
 ```
+
 
 To be sure, these methods can be further optimized - but what we have works, and that's what matters most.
 ### End Notes
