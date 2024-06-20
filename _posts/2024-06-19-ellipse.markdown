@@ -316,7 +316,7 @@ func (s *stream) Circle(cx, cy, r float64) {
 
 To be sure, these methods can be further optimized - but what we have works, and that's what matters most.
 ### End Notes
-[^1]:The $$\theta_2$$ parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
+[^1]:The θ2 parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
 [^2]:The current point is a concept that has no concrete representation as a data structure within a PDF file. Nonetheless, it is helpful to track the current point in order to know precisely where on the page a path operation will take place.
 [^3]:Many programs pre-compute and hard-code values of `kappa` for frequently used angles. The values of `kappa` for `pi/2`, `pi/4`, and `pi/8`, are `0.5522847498307933`, `0.265216489839544` and `0.13132187114288565`. There are other values, derived by other means, that lead to slightly better approximations of the underlying arc, depending on how the error of the fit is calculated, but the method used here is adequate for nearly all cases.
 [^4]:PDF user space graphics have a Cartesian coordinate system. SVGs and many other 2D graphic representations do not. In the SVG coordinate space, y increases downwards. Because of this, certain aspects of the literature on SVG graphics do not directly translate to PDF graphics, and it is important to remain cognizant of this difference.
