@@ -5,13 +5,13 @@ date: 2024-06-19 12:00:00 +0500
 categories:
 ---
 # Cubic Bézier Curve Representations of Elliptic Arcs in PDF Files
-Software programs that generate Portable Document Format (PDF) files usually rely on libraries ([there](https://www.cairographics.org/manual/cairo-PDF-Surfaces.html) [are](https://skia.org/) [many](http://www.fpdf.org/) [of](https://github.com/pymupdf/PyMuPDF) [them](https://pdfkit.org/)) that provide facilities for drawing 2D vector graphics to pages within a PDF file. The PDF spec makes this easy for a predefined set of graphics operator primitives that allow users to draw straight lines, rectangles, and cubic Bézier curves. Users wishing to draw more complex figures need to determine on their own how best to combine these operations to achieve their desired outcome. For certain common shapes - such as circles and ellipses - the process can be surprisingly complicated. This article aims to explain, at a high level, how an author of PDF generating software might implement functions that enable users to draw circles, ellipses, and elliptic arcs without resorting to tedious calculations. As we will see, these are variations on a single problem. I use Go to demonstrate the solution, since it is the language that I wrote [my own library](https://pkg.go.dev/github.com/cdillond/gdf) in, but the basic concepts should apply to most other languages.
+Software programs that generate Portable Document Format (PDF) files usually rely on libraries ([there](https://www.cairographics.org/manual/cairo-PDF-Surfaces.html) [are](https://skia.org/) [many](http://www.fpdf.org/) [of](https://github.com/pymupdf/PyMuPDF) [them](https://pdfkit.org/)) that provide facilities for drawing 2D vector graphics to pages within a PDF file. The PDF spec makes this easy for a predefined set of graphics operator primitives, which allow users to draw straight lines, rectangles, and cubic Bézier curves. Users wishing to draw more complex figures, however, need to determine on their own how best to combine these operations in order to produce the intended shape. For certain common shapes - such as circles and ellipses - the process can be surprisingly complicated. This article aims to explain, at a high level, how an author of PDF generating software might implement functions that enable users to draw circles, ellipses, and elliptic arcs without resorting to tedious calculations. As we will see, these are variations on a single problem. I use Go to demonstrate the solution, since it is the language that I wrote [my own library](https://pkg.go.dev/github.com/cdillond/gdf) in, but the basic concepts should apply to most other languages.
 
 ### Bézier Curves at a Glance
-I want to proceed with an intuitive approach to the problem of elliptic arc representations, so I won't dwell on the mathematics behind Bézier curves, which can involve rather intricate formulas. There's a wonderful introduction to them [here](https://pomax.github.io/bezierinfo), which we will draw on later. A quick and dirty definition, [taken from Mozilla](https://developer.mozilla.org/en-US/docs/Glossary/Bezier_curve), is that a Bézier curve "is a mathematically described curve used in computer graphics ... [that is] defined by a set of control points." It is also important to know that Bézier curves are polynomials. When dealing with PDFs, which only support *cubic* Bézier curves,[^7] any Bézier curve we encounter can be assumed to be a *cubic polynomial*. Furthermore, any curve we encounter in a PDF that is not part of a font or a raster image can be assumed to be composed of segments of Bézier curves.[^8] Cubic Bézier curves necessarily have four control points; by convention, a segment of a curve drawn to a PDF page will always begin at one of the control points and end at another. This article will distinguish between the start and end points of the curve segment, *which are always control points* but will be referred to only as end points, and the control points which are not also end points, which will be referred to only as control points. Doing so simplifies statements about cubic Bézier curves in particular because it is helpful to conceive of the control points (in a broad sense) as grouped into two pairs, each containing one end point and one "pure" control point.
+I want to use an intuitive approach to the problem of elliptic arc representations, so I won't dwell on the mathematics behind Bézier curves, which can involve rather intricate formulas. There's a wonderful introduction to them [here](https://pomax.github.io/bezierinfo), which I will draw on later. A quick and dirty definition, [taken from Mozilla](https://developer.mozilla.org/en-US/docs/Glossary/Bezier_curve), is that a Bézier curve "is a mathematically described curve used in computer graphics ... [that is] defined by a set of control points." It is also important to know that Bézier curves are polynomials. When dealing with PDFs, which only support *cubic* Bézier curves,[^7] any Bézier curve we encounter can be assumed to be a *cubic polynomial*. Furthermore, any curve we encounter in a PDF that is not part of a font or a raster image can be assumed to be composed of segments of Bézier curves.[^8] Cubic Bézier curves necessarily have four control points; by convention, a segment of a curve drawn to a PDF page will always begin at one of the control points and end at another. This article will distinguish between the start and end points of the curve segment, *which are always control points* but will be referred to only as end points, and the control points that are not also end points, which will be referred to only as control points. It is helpful, when describing cubic Bézier curves, to conceive of the control points (in a broad sense) as grouped into two pairs, each containing one end point and one "pure" control point.
 
 ### PDF Cubic Bézier Paths
-In a PDF document, path building commands appear as part of an internal structure known as a *content stream*. Each page of a PDF is associated with at least one content stream, which contains instructions for rendering the page's graphic and textual content. The operators found in content streams are reminiscent of PostScript, but PDFs lack an equivalent to PostScript's `circle` and `arcto` operators. We therefore will have to make do with the `m` (`moveto`) operator, which sets the PDF path's current point,[^2] and the `c` operator, which is one of the three cubic Bézier curve operators defined by the PDF spec.
+In a PDF document, path building commands appear as part of an internal structure known as a *content stream*. Each page of a PDF is associated with at least one content stream, which contains instructions for rendering the page's graphic and textual content. The operators used in content streams are reminiscent of those used in PostScript, but PDFs lack an equivalent to PostScript's `circle` and `arcto` operators. We therefore will have to make do with the `m` (`moveto`) operator, which sets the PDF path's current point,[^2] and the `c` operator, which is one of the three cubic Bézier curve operators defined by the PDF spec.
 
 A simple, unstroked curve in a PDF content stream might look like this:
 ```postscript
@@ -20,7 +20,7 @@ A simple, unstroked curve in a PDF content stream might look like this:
 ```
 The `c` operator takes six arguments: `x1`, `y1`, `x2`, `y2`, `x3`, and `y3`, where `(x1, y1)` and `(x2, y2)` are the curve's control points and `(x3, y3)` is the curve's endpoint. The start point is implicitly defined as the path's current point, which is initialized using the `m` operator. After each `c` operation, `(x3, y3)` becomes the new current point.
 
-The details of how the necessary information is written to a content stream object can be ignored for now. For the purpose of this article, we can mock a content stream in Go using a struct that embeds an `io.Writer`.
+The details of how the necessary information is written to a content stream object can be ignored for now. For the purpose of this article, we can mock a content stream in Go using a struct that embeds an `io.Writer`:
 ```go
 type stream struct {
     w io.Writer
@@ -28,7 +28,7 @@ type stream struct {
 ```
 
 
-We can also define a `point` type in Go that represents the x and y coordinates of a point in the PDF user space. The `point` type will be used in the methods we define to write `m` and `c` commands to a `stream`.
+We can also define a `point` type in Go that represents the x and y coordinates of a point in the PDF user space. The `point` type will be used in the methods we define to write `m` and `c` commands to a `stream`:
 ```go
 type point struct {
     x, y float64
@@ -47,7 +47,7 @@ func (s stream) curveTo(q1, q2, p2 point) {
 These two functions will serve as the basic interface for the content stream.
 
 ### Defining an Arc
-While the term *arc* usually means a segment of a curve, its meaning here will be more specific. In this article, I will use the term arc *only* when referring to circular arcs or elliptic arcs, which, as their names imply, are segments of circles or ellipses. In the expansive sense of the word, all curves in a PDF document are also arcs, since they have definite start and end points, but in the more specific sense, *no* curves in a PDF are arcs, since a Bézier curve can never be mathematically equivalent to a circular or elliptic arc.
+While the term *arc* usually means a segment of a curve, its meaning in this article will be more specific. I will use the term arc *only* when referring to circular arcs or elliptic arcs, which, as their names imply, are segments of circles or ellipses. In the expansive sense of the word, all curves in a PDF document are also arcs, since they have definite start and end points, but in the more specific sense, *no* curves in a PDF are arcs, since a Bézier curve can never be mathematically equivalent to a circular or elliptic arc.
 
 At risk of stating the obvious: all circles are ellipses. If we can figure out how to draw any elliptic arc, we will have figured out how to draw any circular arc. Our API will therefore be based on a function for drawing elliptic arcs, which we will name `Arc`. That function will serve as a tool to construct circles and ellipses.
 
@@ -57,11 +57,11 @@ To decide which parameters the `Arc` function should accept, we can look to comp
 rx and ry are the radii of the ellipse (also known as its semi-major and semi-minor axes).
 φ is the angle from the x-axis of the current coordinate system to the x-axis of the ellipse.
 ...
-θ1 which is the start angle of the elliptical arc ...
-θ2 which is the end angle of the elliptical arc ...
-Δθ which is the difference between these two angles.
+θ1 ... is the start angle of the elliptical arc ...
+θ2 ... is the end angle of the elliptical arc ...
+Δθ ... is the difference between these two angles.
 ```
-The `Arc` function we implement will take an arc's center parameterization (or something very like it)[^1] as input and writes an approximation of that arc, composed of cubic Bézier curves, to a PDF. 
+The `Arc` function we implement will take an arc's center parameterization (or something very like it)[^1] as input and write an approximation of that arc, composed of cubic Bézier curves, to a PDF. 
 
 ### From Ellipse to Circle
 For an ellipse with a center point of `center`, an x-axis angle of `phi`, a semi-major axis of `rx`, and a semi-minor axis of `ry`, the coordinates of the point at the angle `theta` from the ellipse's semi-major axis can be found using the following formula:
@@ -75,8 +75,6 @@ func ellipse(theta, phi, rx, ry float64, center point) point {
 	return p
 }
 ```
-
-
 If we assume that the ellipse is centered on the origin and that `phi` is `0`, this can be simplified to:
 ```go
 func ellipse(theta, rx, ry float64) point {
@@ -164,7 +162,7 @@ func kappa(alpha float64) float64 { return 4./3.*math.Tan(alpha/4.) }
 ```
 
 
-Each end point / control point pair forms a line segment that is tangent to the unit circle. Using the `kappa` function,[^3] we can build a new function to determine the control points for a Bézier curve that approximates our very basic circular arc from `circle(0)` to `circle(alpha)`. The values for the start point and first control point can be determined in advance, but I'm leaving them in for the sake of clarity.
+Each end point / control point pair forms a line segment that is tangent to the unit circle. Using the `kappa` function,[^3] we can build a new function to determine the control points for a Bézier curve that approximates our very basic circular arc from `circle(0)` to `circle(alpha)`. The values for the start point and first control point can be determined in advance, but I'm leaving them in for clarity's sake.
 ```go
 func basicArc(alpha float64) (p1, q1, q2, p2 point) {
     p1 = circle(0) // (1, 0)
@@ -217,8 +215,9 @@ func basicArc(alpha, tau float64) (p1, q1, q2, p2 point) {
 
 
 This means that we can now define an approximation of any arc on the unit circle in terms of the arc's central angle and angle of offset as long as the arc's central angle is less than `pi` (and, ideally, less than or equal to `pi/2`). To draw an arc with a central angle that exceeds this limit, all we need to do is split the arc into smaller segments and then draw those segments as if they were individual arcs.
+
 ### Approximating Circular Arcs
-We are now ready to add a new method, `Arc`, to the `stream` type. The `Arc` method will be responsible for splitting the arc into segments and writing the Bézier approximations of those segments to the `stream` receiver. In this function, we define a loop variable `beta`, which is initialized to 0, and counts upwards by `step` until it reaches `delta`. The `step` variable is the maximum arc length in radians. Each iteration, the curve drawn to the `stream` will have an offset of `theta` and an angle of `step`, unless `step` is larger than the angle of the portion of the arc yet to be drawn. In that case, the segment will have an angle of `delta - beta`, which is effectively the remainder of `delta`/`step`. At the end of each iteration, the offset, `theta` is incremented by `step`.
+We are now ready to add a new method, `Arc`, to the `stream` type. The `Arc` method will split the arc into segments and write the Bézier approximations of those segments to the `stream` receiver. In this function, we define a loop variable `beta`, which is initialized to 0, and counts upwards by `step` until it reaches `delta`. The `step` variable is the maximum arc length in radians. Each iteration, the curve drawn to the `stream` will have an offset of `theta` and an angle of `step`, unless `step` is larger than the angle of the portion of the arc yet to be drawn. In that case, the segment will have an angle of `delta - beta`, which is effectively the remainder of `delta`/`step`. At the end of each iteration, the offset `theta` is incremented by `step`.
 ```go
 func (s *stream) Arc(theta, delta, step float64) {
 	if step <= 0 || step > math.Pi {
@@ -264,7 +263,7 @@ func (s *stream) Arc(theta, delta, step float64) {
 ```
 
 ### Approximating Elliptic Arcs
-As it stands, `Arc` only draws circular arcs along the unit circle. But we now have all the tools necessary to draw any elliptic arc. The final step is to transform each point so that the arc's center point, x-radius, y-radius, and x angle of rotation match the supplied parameters. We can do this using our affine transformations. The order of these transformations makes a difference. To get the correct results, we need to first scale, then rotate, then translate each point. 
+As it stands, `Arc` only draws circular arcs along the unit circle. But we now have all the tools necessary to draw any elliptic arc. The final step is to transform each point so that the arc's center point, x-radius, y-radius, and x angle of rotation match the supplied parameters. We can do this using affine transformations. The order of these transformations makes a difference. To get the correct results, we need to first scale, then rotate, then translate each point. 
 ```go
 func (s *stream) Arc(cx, cy, rx, ry, theta, delta, phi, step float64) {
 	if step <= 0 || step > math.Pi {
@@ -301,7 +300,7 @@ func (s *stream) Arc(cx, cy, rx, ry, theta, delta, phi, step float64) {
 ```
 
 ### From Arc to Ellipse to Circle
-Since an ellipse is just an arc with a `delta` of `2*pi` and a circle is just an ellipse with equal `rx` and `ry` values, the conclusion to this whole saga is anti-climatic. We can choose a `step` value (here, it will be `pi/4`) and write the following wrappers for the `Arc` method.
+Since an ellipse is just an arc with a `delta` of `2*pi` and a circle is just an ellipse with equal `rx` and `ry` values, the conclusion to this whole saga is surprisingly simple. We can choose a `step` value (here, it will be `pi/4`) and write the following wrappers for the `Arc` method.
 ```go
 func (s *stream) Ellipse(cx, cy, rx, ry, phi float64) { 
 	s.Arc(cx, cy, rx, ry, 0, 2*math.Pi, phi, math.Pi/4.)
@@ -316,8 +315,8 @@ To be sure, these methods can be further optimized - but what we have works, and
 ### End Notes
 [^1]:The θ2 parameter and Δθ parameters are redundant. The final function will use only the Δθ parameter, renamed to `delta`. It will also introduce an unrelated `step` parameter, which will allow the user to control the size of the arc's subsections. 
 [^2]:The current point is a concept that has no concrete representation as a data structure within a PDF file. Nonetheless, it is helpful to track the current point in order to know precisely where on the page a path operation will take place.
-[^3]:Many programs pre-compute and hard-code values of `kappa` for frequently used angles. The values of `kappa` for `pi/2`, `pi/4`, and `pi/8`, are `0.5522847498307933`, `0.265216489839544` and `0.13132187114288565`. There are other values, derived by other means, that lead to slightly better approximations of the underlying arc, depending on how the error of the fit is calculated, but the method used here is adequate for nearly all cases.
-[^4]:PDF user space graphics have a Cartesian coordinate system. SVGs and many other 2D graphic representations do not. In the SVG coordinate space, y increases downwards. Because of this, certain aspects of the literature on SVG graphics do not directly translate to PDF graphics, and it is important to remain cognizant of this difference.
+[^3]:Many programs pre-compute and hard-code values of `kappa` for frequently used angles. The values of `kappa` for `pi/2`, `pi/4`, and `pi/8`, are `0.5522847498307933`, `0.265216489839544`, and `0.13132187114288565`. There are other values, derived by other means, that lead to slightly better approximations of the underlying arc, depending on how the error of the fit is calculated, but the method used here is adequate for nearly all cases.
+[^4]:PDF user space graphics have a Cartesian coordinate system. SVGs and many other 2D graphic representations do not. In the SVG coordinate space, y increases downwards. Because of this, certain aspects of the literature on SVG graphics do not directly translate to PDF graphics, and it is important to keep this difference in mind.
 [^5]:Path direction matters, even if it seems like it shouldn't. If a path is filled using the [non-zero winding](https://en.wikipedia.org/wiki/Nonzero-rule) rule, a point's fill state can depend on the path's direction.
 [^6]:The PDF spec is available for free, but it's not possible to link to it directly. Discussion of PDF transformation matrices can be found in section 8.3.4 of the spec. For information on transformation matrices in computer graphics generally, see this [lecture powerpoint](https://www3.nd.edu/~pbui/teaching/cse.40166.fa10/slides/Lecture_4_Transformations_and_Matrices.pdf).
 [^7]:PDFs support font formats that describe character outlines in terms of quadratic Bézier curves, but that's a whole other can of worms. Here, we are only concerned with graphics operators defined directly by the PDF specification.
