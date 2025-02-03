@@ -57,11 +57,9 @@ AddressSanitizer:DEADLYSIGNAL
 ==19249==ERROR: AddressSanitizer: SEGV on unknown address 0x0000004020e0 (pc 0x0000004017dd bp 0x7fff1ee1e2a0 sp 0x7fff1ee1e1f0 T0)
 ==19249==The signal is caused by a WRITE memory access.
 ```
-Anybody better at C than me will probably have noticed instantly that the function `replace` should not be used on string literals (or variables naming string literals) *at all*. In fact, the only valid inputs for the `s` parameter are null-terminated `char` arrays. To quote K&R,
-```
-Whether identical string literals are distinct is implementation-defined, and the behavior of a program that attempts to alter a string literal is undefined.
-```
-In all fairness to myself, the sentence **immediately** preceding that one is: "A string has type `array of characters` and storage class `static` ... and is initialized with the given characters." 🤪
+Anybody better at C than me will probably have noticed instantly that the function `replace` should not be used on string literals (or variables naming string literals) *at all*. Indeed, the only valid inputs for the `s` parameter are null-terminated `char` arrays. This is true despite the fact that such an array decays to a pointer that is indistinguishable by the callee from a pointer to a string literal.
+
+To quote K&R, "Whether identical string literals are distinct is implementation-defined, and the behavior of a program that attempts to alter a string literal is undefined." In all fairness to myself, the sentence **immediately** preceding that one is: "A string has type `array of characters` and storage class `static` ... and is initialized with the given characters." 🤪
 
 The reason I point out that sentence is that the fix to the problem in my program is to explicitly declare the variable `str` as an array, rather than a `char *`. Even declaring `str` as an array of characters with the storage class `static` is enough to avoid the segfault.
 ```C
@@ -77,16 +75,13 @@ Why does this happen? I've run headlong into undefined behavior territory. In th
 
 It turns out that strings and string literals in C are two subtly different concepts. Per the C23 spec, "A string is a contiguous sequence of characters terminated by and including the first null character." Meanwhile, the spec defines a character string literal as "a sequence of zero or more multibyte characters enclosed in double-quotes." In an easy-to-miss footnote, it clarifies: "A string literal may not be a string (see 7.1.1), because a null character can be embedded in it by a `\0` escape sequence."
 
-To muddy the waters, a `char` array can be initialized to the value of a string literal without itself being a string literal.
+To muddy the waters further, a `char` array can be initialized to the value of a string literal without itself being a string literal.
 
 ```C
     char str_0[] = "some string";
     char *str_1 = "some string";
 
 ```
-In the foregoing example, `str_0` is the name for an array initialized to the value of a string literal (i.e. "some string"). `str_1` is a pointer to the first character of the string literal "some string". Both are technically strings. Modifying `str_0` is fine. Modifying the data pointed to by `str_1` is undefined behavior. All of this information is invisible from the perspective of any function that operates on either `str_0` or `str_1`. That's a little frightening to me. 
+In the foregoing example, `str_0` is the name for an array initialized to the value of a string literal (i.e. "some string"). `str_1` is the name for a pointer to the zeroth character of the string literal "some string". Both are technically strings. Modifying the data named by `str_0` is fine. Modifying the data pointed to by `str_1` is undefined behavior. All of this information is invisible from the perspective of any function that operates on either `str_0` or `str_1`. That's a little frightening to me. 
 
 One last thing... it occurs to me now, only after writing all this, that I might avoid this very problem in the future if I make sure to declare all strings that I definitely do not want to modify as `const char *` and declare all other strings as `char` arrays. Sigh. I'll chalk this up as a lesson (hopefully) learned the hard way.
-
-
-
