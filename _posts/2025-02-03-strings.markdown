@@ -1,0 +1,86 @@
+# Learning C: Bitten by Strings
+TLDR: In C, string literals *aren't* just pointers and they *aren't* just arrays either.
+
+The first thing anybody tells you before they try to teach you C is that it's full of pitfalls, some more obvious than others. The first thing they will tell you when they try to teach you about strings in C is that "a string is just a null-terminated array of characters," smoothing over the ways in which this is *not* the case. Fine, maybe I'm being unfair -- the second thing they might tell you about strings is that in C they are particularly hairy for all sorts of other reasons. But nobody has the attention span to learn about all the reasons this is true in one sitting; much ink can be spilled before the word `wchar_t` is even mentioned, not that it matters in this case. The mistake outlined in this post is completely my fault, but also, I think, illustrative of an important way in which the received wisdom about various types in C being "just pointers" is wrong.
+
+In the interest of broadening my knowledge of computers, I've been doing some self-directed learning about C. Here's an issue that I ran into while trying to write a function involving strings. A minimal reproducible example might look something like the following function, which takes a string `s` as an input, replaces all instances of the character `old` in `s` with `new` and returns the number of characters replaced.
+```C
+int replace(char *s, char old, char new)
+{
+    int n = 0;
+    while (*s)
+    {
+        if (*s == old)
+        {
+            *s = new;
+            n++;
+        }  
+        s++;
+    }
+    return n;
+}
+```
+To my novice eye, this code looks like your typical, unsafe C. The function is intended to be used on a string, but, because of the rules of C's type system, the caller of `replace` could -- to potentially disastrous effect -- use any of the following as the `s` parameter:
+1. A null pointer.
+2. A string literal.
+3. A variable naming a string literal.
+4. A pointer to an array of `char`s.
+5. A pointer to a `char`.
+6. Probably other things too.
+   
+Of course, every function in C rests on unstated assumptions that many newer languages would require the programmer to explicitly guard against. When writing the functions, here are the assumptions I was aware of making:
+1. `s` is a valid null-terminated string.
+2. `new` is not `\0`.
+3. `s` is not accessed by any other threads for the duration of the function.
+   
+If these three assumptions hold, I thought, everything should be fine.
+```C
+int main(void)
+{
+    char *str = "some string";
+    int n = replace(str, 's', 'S');
+    printf("%d chars replaced in: %s\n", n, str);
+}
+```
+
+Of course, everything was not fine.
+
+```
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==19249==ERROR: AddressSanitizer: SEGV on unknown address 0x0000004020e0 (pc 0x0000004017dd bp 0x7fff1ee1e2a0 sp 0x7fff1ee1e1f0 T0)
+==19249==The signal is caused by a WRITE memory access.
+```
+Anybody better at C than me will probably have noticed instantly that the function `replace` should not be used on string literals (or variables naming string literals) *at all*. In fact, the only valid inputs for the `s` parameter are null-terminated `char` arrays. To quote K&R,
+```
+Whether identical string literals are distinct is implementation-defined, and the behavior of a program that attempts to alter a string literal is undefined.
+```
+In all fairness to myself, the sentence **immediately** preceding that one is: "A string has type `array of characters` and storage class `static` ... and is initialized with the given characters." 🤪
+
+The reason I point out that sentence is that the fix to the problem in my program is to explicitly declare the variable `str` as an array, rather than a `char *`. Even declaring `str` as an array of characters with the storage class `static` is enough to avoid the segfault.
+```C
+    /* this works */
+    char str0[] = "some string";
+    replace(str0, 's', 'S');
+    /* this works too */
+    static char str1[] = "some string";
+    replace(str1, 's', 'S');
+```
+
+Why does this happen? I've run headlong into undefined behavior territory. In this particular instance, I compiled my program for a Linux machine. GCC stores string literals in the `.data` section of an ELF binary, but it doesn't do the same for modifiable arrays. The `.data` section is read-only, so any attempted writes cause a segfault. Similar things probably happen on Windows or Mac machines, but I can't be bothered to check.
+
+It turns out that strings and string literals in C are two subtly different concepts. Per the C23 spec, "A string is a contiguous sequence of characters terminated by and including the first null character." Meanwhile, the spec defines a character string literal as "a sequence of zero or more multibyte characters enclosed in double-quotes." In an easy-to-miss footnote, it clarifies: "A string literal may not be a string (see 7.1.1), because a null character can be embedded in it by a `\0` escape sequence."
+
+To muddy the waters, a `char` array can be initialized to the value of a string literal without itself being a string literal.
+
+```C
+    char str_0[] = "some string";
+    char *str_1 = "some string";
+
+```
+In the foregoing example, `str_0` is the name for an array initialized to the value of a string literal (i.e. "some string"). `str_1` is a pointer to the first character of the string literal "some string". Both are technically strings. Modifying `str_0` is fine. Modifying the data pointed to by `str_1` is undefined behavior. All of this information is invisible from the perspective of any function that operates on either `str_0` or `str_1`. That's a little frightening to me. 
+
+One last thing... it occurs to me now, only after writing all this, that I might avoid this very problem in the future if I make sure to declare all strings that I definitely do not want to modify as `const char *` and declare all other strings as `char` arrays. Sigh. I'll chalk this up as a lesson (hopefully) learned the hard way.
+
+
+
