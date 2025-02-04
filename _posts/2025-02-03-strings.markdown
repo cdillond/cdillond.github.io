@@ -5,11 +5,12 @@ date: 2025-02-03 12:00:00 +0000
 categories:
 ---
 # Learning C: Bitten by Strings
-TLDR: In C, string literals *aren't* just pointers and they *aren't* just arrays either.
+TLDR: In C, string literals *aren't* just pointers, *aren't* just arrays, and they *aren't* even necessarily strings.
 
 The first thing anybody tells you before they try to teach you C is that it's full of pitfalls, some more obvious than others. The first thing they will tell you when they try to teach you about strings in C is that "a string is just a null-terminated array of characters," smoothing over the ways in which this is *not* the case. Fine, maybe I'm being unfair -- the second thing they might tell you about strings is that in C they are particularly hairy for all sorts of other reasons. But nobody has the attention span to learn about all the reasons this is true in one sitting; much ink can be spilled before the word `wchar_t` is even mentioned, not that it matters in this case. The mistake outlined in this post is completely my fault, but also, I think, illustrative of an important way in which the received wisdom about various types in C being "just pointers" is wrong.
 
 In the interest of broadening my knowledge of computers, I've been doing some self-directed learning about C. Here's an issue that I ran into while trying to write a function involving strings. A minimal reproducible example might look something like the following function, which takes a string `s` as an input, replaces all instances of the character `old` in `s` with `new` and returns the number of characters replaced.
+
 ```C
 int replace(char *s, char old, char new)
 {
@@ -26,7 +27,9 @@ int replace(char *s, char old, char new)
     return n;
 }
 ```
+
 To my novice eye, this code looks like typical C. The function is intended to be used on a string, but, because of the rules of C's type system, the caller of `replace` could -- to potentially disastrous effect -- pass any of the following as the `s` parameter:
+
 1. A null pointer.
 2. A string literal.
 3. A variable naming a string literal.
@@ -35,11 +38,14 @@ To my novice eye, this code looks like typical C. The function is intended to be
 6. Probably other things too.
    
 Of course, every function in C rests on unstated assumptions that many newer languages would require the programmer to explicitly guard against. When writing the functions, here are the assumptions I was aware of making:
+
 1. `s` is a valid null-terminated string.
-2. `new` is not `\0`.
-3. `s` is not accessed by any other threads for the duration of the function.
+2. The text of `s` is representable by a single-byte character set encoding.
+3. `new` is not `\0`.
+4. `s` is not accessed by any other threads for the duration of the function.
    
 If these three assumptions hold, I thought, everything should be fine.
+
 ```C
 int main(void)
 {
@@ -57,6 +63,7 @@ AddressSanitizer:DEADLYSIGNAL
 ==19249==ERROR: AddressSanitizer: SEGV on unknown address 0x0000004020e0 (pc 0x0000004017dd bp 0x7fff1ee1e2a0 sp 0x7fff1ee1e1f0 T0)
 ==19249==The signal is caused by a WRITE memory access.
 ```
+
 Anybody better at C than me will probably have noticed instantly that the function `replace` should not be used on string literals (or variables naming string literals) *at all*. Indeed, the only valid inputs for the `s` parameter are null-terminated `char` arrays *that are not string literals*. This is true despite the fact that such an array decays to a pointer that is indistinguishable by the callee from a pointer to a string literal. 
 
 To quote K&R, "Whether identical string literals are distinct is implementation-defined, and the behavior of a program that attempts to alter a string literal is undefined." In all fairness to myself, the sentence **immediately** preceding that one is: "A string has type `array of characters` and storage class `static` ... and is initialized with the given characters." 🤪
@@ -83,9 +90,7 @@ To muddy the waters further, a `char` array can be initialized to the value of a
     char *str_1 = "some string";
 
 ```
+
 In the foregoing example, `str_0` is the name for an array initialized to the value of a string literal (i.e. "some string"). The value of `str_0` is defined only when it comes into scope. That is, the string literal "some string" is likely stored as a distinct object and its representation in memory is copied to `str_0` each time `str_0` is initialized. `str_1` is the name for a pointer to the first character of the instantiation of the string literal "some string". Both `str_0` and `str_1` are technically strings. Modifying the data named by `str_0` is fine. Modifying the data pointed to by the pointer named by `str_1` is undefined behavior. All of this information is invisible from the perspective of any function that operates on either `str_0` or `str_1`. That's a little frightening to me.
 
 One last thing... it occurs to me now, only after writing all this, that I might avoid this very problem in the future if I make sure to declare all strings that I definitely do not want to modify as `const char *` and declare all other strings as `char` arrays. That way, if I pass the `-Werror=discarded-qualifiers` flag to GCC, I'll at least get a compilation error. Sigh. I'll chalk this up as a lesson (hopefully) learned the hard way.
-
-
-
