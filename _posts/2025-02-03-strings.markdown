@@ -88,7 +88,6 @@ To muddy the waters further, a `char` array can be initialized to the value of a
 ```C
     char str_0[] = "some string";
     char *str_1 = "some string";
-
 ```
 
 In the foregoing example, `str_0` is the name for an array initialized to the value of a string literal (i.e. "some string"). The value of `str_0` is defined only when it comes into scope. That is, the string literal "some string" is likely stored as a distinct object and its representation in memory is copied to `str_0` each time `str_0` is initialized. `str_1` is the name for a pointer to the first character of the instantiation of the string literal "some string". Both `str_0` and `str_1` are technically strings. Modifying the data named by `str_0` is fine. Modifying the data pointed to by the pointer named by `str_1` is undefined behavior. All of this information is invisible from the perspective of any function that operates on either `str_0` or `str_1`. That's a little frightening to me.
