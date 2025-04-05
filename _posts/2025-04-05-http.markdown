@@ -1,10 +1,10 @@
 ---
 layout: post
-title:  "Using Type Aliasing To Make net/http Make Sense"
+title:  "Abusing Type Aliasing To Make net/http Make Sense"
 date: 2025-02-03 12:00:00 +0000
 categories:
 ---
-# Using Type Aliasing To Make net/http Make Sense
+# Abusing Type Aliasing To Make net/http Make Sense
 Two of Go's strong points -- that it deservedly receives much praise for -- are its simplicity relative to other programming languages and its robust and comprehensive standard library. But, I think its `net/http` package fails to live up to these values. `net/http` makes extensive use of interfaces in ways that are clever yet difficult to grasp. This is especially problematic because the `http` subpackage is the first package in `net` that most programmers who are new to the language will use.
 
 When setting up a default server, programmers register instances of the `http.Handler` interface to be invoked when the server receives a request for a path that matches a specified string. To register an `http.Handler`, a programmer can call `http.Handle`. Or, to register a function with the signature `func(http.ResponseWriter, *http.Request)` in place of an `http.Handler`, `http.HandleFunc` can be used. I find this confusing already, but it gets harder to follow when the `http.HandlerFunc` type is thrown into the mix. `http.HandlerFunc` is a concrete type of function that implements the `http.Handler` interface by wrapping its own value in a method. Any function with the signature `func(http.ResponseWriter, *http.Request)` can be converted into an `http.Handler` using the expression `http.HandlerFunc(fn)`. `http.HandleFunc` works by converting the function passed to it to an `http.HandlerFunc` and then registering it with the package's default server. 
