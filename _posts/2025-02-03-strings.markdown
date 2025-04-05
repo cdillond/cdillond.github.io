@@ -2,7 +2,7 @@
 layout: post
 title:  "Learning C: Bitten by Strings"
 date: 2025-02-03 12:00:00 +0000
-categories:
+categories: C, strings
 ---
 # Learning C: Bitten by Strings
 TLDR: In C, string literals *aren't* just pointers, *aren't* just arrays, and they *aren't* even necessarily strings.

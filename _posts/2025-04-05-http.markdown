@@ -1,0 +1,61 @@
+---
+layout: post
+title:  "Using Type Aliasing To Make net/http Make Sense"
+date: 2025-02-03 12:00:00 +0000
+categories: Go, net/http, aliasing
+---
+# Using Type Aliasing To Make net/http Make Sense
+Two of Go's strong points -- that it deservedly receives much praise for -- are its simplicity relative to other programming languages and its robust and comprehensive standard library. But, I think its `net/http` package fails to live up to these values. `net/http` makes extensive use of interfaces in ways that are clever yet difficult to grasp. This is especially problematic because the `http` subpackage is the first package in `net` that most programmers who are new to the language will use.
+
+When setting up a default server, programmers register instances of the `http.Handler` interface to be invoked when the server receives a request for a path that matches a specified string. To register an `http.Handler`, a programmer can call `http.Handle`. Or, to register a function with the signature `func(http.ResponseWriter, *http.Request)` in place of an `http.Handler`, `http.HandleFunc` can be used. I find this confusing already, but it gets harder to follow when the `http.HandlerFunc` type is thrown into the mix. `http.HandlerFunc` is a concrete type of function that implements the `http.Handler` interface by wrapping its own value in a method. Any function with the signature `func(http.ResponseWriter, *http.Request)` can be converted into an `http.Handler` using the expression `http.HandlerFunc(fn)`. `http.HandleFunc` works by converting the function passed to it to an `http.HandlerFunc` and then registering it with the package's default server. 
+
+This is a lot of functionality, covered by elements of the `net/http` package that have the word "Handle" in their names. In Go, interfaces are, by convention, named for the methods that define them. The `io.Reader` interface is defined by the `Read` method. The `io.Writer` interface is defined by the `Write` method, and so on and so forth. One would expect all instances of the `http.Handler` interface to implement a `Handle` method -- and indeed such a method *does* exist for the `http.ServeMux` type -- but no. Instead, `http.Handler` is defined by the `ServeHTTP` method. Presumably (I'm sure this is documented somewhere, but I haven't looked) the authors of the package felt that `http.ServeHTTPer` sounded bad and `http.HTTPServer`, in addition to stuttering, gives the wrong idea about what the interface is for and leaves the door open for confusion with the `http.Server` type and the `http.Serve` function. Side complaint: I've been stymied in the past by the fact that `http.Serve` and `http.ServeTLS` are conceptually quite different from `http.ServeFile`, `http.ServeContent`, and `http.ServeFileFS`.
+
+To make matters worse, middlewares are commonly implemented as functions that accept an `http.Handler` and return an `http.Handler`. Middleware functions are often chained such that they close over each other, resulting in frequent repetition of some form of `http.Handle*` in any code that relies on them. Often, these functions return anonymous functions that are converted to `http.HandleFunc`s and then invoked via `http.HandleFunc.ServeHTTP`. None of this is particularly simple to understand. Take, for example, this minimal implementation of an http server with middleware.
+```Go
+func middlewareA(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Println("hi")
+		h.ServeHTTP(w, r)
+	})
+}
+
+func middlewareB(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+		log.Println("hi again")
+	})
+}
+
+func Hello(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("hello!"))
+}
+
+func GoodBye(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("goodbye!"))
+}
+
+func main() {
+	http.Handle("/hello", middlewareA(middlewareB(http.HandlerFunc(Hello))))
+	http.HandleFunc("/goodbye", GoodBye)
+	http.ListenAndServe(":6969", nil)
+}
+```
+Now imagine there are far more middleware functions and invocations of `http.Handle` or `http.HandleFunc` for many more paths. The nesting of functions soon boggles the mind and all the `Handle`s begin to blur into each other.
+
+Could any of the `http.Handle*` identifiers have better names? I won't repeat the programming joke about naming things, but I do think this is an instance where the Go authors could have improved the package's clarity by choosing more precise, or at least more distinctive, names. If I had my way, I would rename `http.Handle` to `http.Register` and `http.HandleFunc` to `http.RegisterFunc`. They're a little more verbose, but I think `Register` gets the point across better than `Handle`. (After writing this I discovered that for versions of Go >=1.22, `http.Handle` essentially acts as a wrapper around an unexported `http.ServeMux.register` method). I also think `http.Handler` should be `http.Responder` defined by a `Respond` method, and `http.HandlerFunc` should be `http.RespondFunc` or `http.ResponseFunc`. This last one is perhaps a bit dicey, since the `net/http` package includes code intended for use by http clients in addition to http servers. In an ideal world, those two perspectives might be separated, so there would be no confusion between a `ResponseFunc` type and a `Response` type.
+
+Luckily, I write software as a hobby, so I don't have to worry too much about departing from standard library conventions. I have found that type aliasing, a feature from Go 1.9 intended for use when incrementally updating large projects, has improved the ergonomics of the `net/http` package considerably for me. Type aliasing allows developers to rename previously defined types. Unlike types defined as other types (think `type username string`), which are trivially converted to each other but are not interchangeable, a type alias is identical to the type it aliases, it just has a different name (e.g, `type byte = uint8`). Type aliases are defined using the syntax `type newType = oldType`. In personal projects that implement http servers in Go, I've taken to including the following snippet:
+```Go
+type (
+    Responder = http.Handler
+    RespondFunc = http.HandlerFunc
+
+    /* thrown in for good measure */
+    rw = http.ResponseWriter
+    rq = http.Request
+)
+```
+Here, I've renamed the `http.Handler` interface to `Responder` and the `http.HandlerFunc` type to `RespondFunc`. Granted, the `Responder` interface still doesn't conform to the convention of naming an interface after the method that defines it, but I think the new name better captures the interface's purpose than the more generic `Handler` and avoids the sort of near-collisions with other forms of `http.Handle*` identifiers that can sow confusion. I've shortened `http.ResponseWriter` and `http.Request` because I've found them to be a hassle to type out each time I want to define a new function to be used as a `RespondFunc`. `http.Handle` and `http.HandleFunc` stay as they were. Since they are wrappers for the `http.DefaultServeMux.Handle` and `http.DefaultServeMux.HandleFunc` methods, whose names cannot be redefined, it makes sense to retain the nominal links between those functions and methods.
+
+This is a relatively small change to how I use `net/http` that doesn't affect the package's implementation at all, but I have found that when I don't need to worry about the differences between `http.Handle`, `http.Handler`, `http.HandleFunc`, and `http.HandlerFunc`, I have a much easier time reasoning about what the program that I'm writing is doing. Ultimately, this lets me enjoy the many parts of Go that make programming fun.
