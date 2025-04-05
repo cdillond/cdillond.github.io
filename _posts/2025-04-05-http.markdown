@@ -2,7 +2,7 @@
 layout: post
 title:  "Using Type Aliasing To Make net/http Make Sense"
 date: 2025-02-03 12:00:00 +0000
-categories: Go, net/http, aliasing
+categories:
 ---
 # Using Type Aliasing To Make net/http Make Sense
 Two of Go's strong points -- that it deservedly receives much praise for -- are its simplicity relative to other programming languages and its robust and comprehensive standard library. But, I think its `net/http` package fails to live up to these values. `net/http` makes extensive use of interfaces in ways that are clever yet difficult to grasp. This is especially problematic because the `http` subpackage is the first package in `net` that most programmers who are new to the language will use.
