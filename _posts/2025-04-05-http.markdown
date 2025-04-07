@@ -13,7 +13,8 @@ This is a lot of functionality covered by elements of the `net/http` package tha
 
 Or, perhaps it's just a leaky abstraction. Consider the fact that `net/http` defines `http.Serve`, `http.ServeTLS`, `http.ServeFile`, `http.ServeContent`, and `http.ServeFileFS` functions in addition to `http.Handler.ServeHTTP`. From the point of view of a developer writing a server application, `http.Serve` and `http.ServeTLS` are quite different from the latter four. They take a `net.Listener` and an `http.Handler` as arguments whereas the others operate on `http.ResponseWriter`s and `http.Request`s. What's going on?
 
-Teasing the functions out into separate layers, the process goes something like this:
+The steps needed to set up a `net/http` server look something like this:
+
 1. Construct a new `net.Listener` using `net.Listen("tcp", "host:port")`. This binds to the specified port and begins listening for TCP connections.
 2. Call `http.Serve(net.Listener, http.Handler)`. This function:
    1. Accepts new TCP connections exposed by the `net.Listener` and manages existing connections.
