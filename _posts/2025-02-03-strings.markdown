@@ -68,15 +68,15 @@ Anybody better at C than me will probably have noticed instantly that the functi
 
 To quote K&R, "Whether identical string literals are distinct is implementation-defined, and the behavior of a program that attempts to alter a string literal is undefined." In all fairness to myself, the sentence **immediately** preceding that one is: "A string has type `array of characters` and storage class `static` ... and is initialized with the given characters." 🤪
 
-The reason I point out that sentence is that the fix to the problem in my program is to explicitly declare the variable `str` as an array, rather than a `char *`. Even declaring `str` as an array of characters with the storage class `static` is enough to avoid the segfault. Clearly, I've missed something about the differences between a string and a string literal - concepts that are indistinct in the languages I've learned so far.
+The reason I point out that sentence is that the fix to the problem in my program is to explicitly declare the variable `str` as an array, rather than a `char *`. Even declaring `str` as an array of characters without the storage class `static` is enough to avoid the segfault. Clearly, I've missed something about the differences between a string and a string literal - concepts that are indistinct in the languages I've learned so far.
 
 ```C
     /* this works */
-    char str0[] = "some string";
-    replace(str0, 's', 'S');
-    /* this works too */
     static char str1[] = "some string";
     replace(str1, 's', 'S');
+    /* this works too */
+    char str0[] = "some string";
+    replace(str0, 's', 'S');
 ```
 
 It turns out that strings and string literals in C are two subtly different concepts. Per the C23 spec, "A string is a contiguous sequence of characters terminated by and including the first null character." Meanwhile, the spec defines a character string literal as "a sequence of zero or more multibyte characters enclosed in double-quotes." In an easy-to-miss footnote, it clarifies: "A string literal may not be a string (see 7.1.1), because a null character can be embedded in it by a `\0` escape sequence."
